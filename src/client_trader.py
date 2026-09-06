@@ -1,4 +1,3 @@
-
 import socket, select
 import sys
 
@@ -48,6 +47,39 @@ def read(sock, n):
         data+=chunk
     return data
 
+
+#edited
+def print_lines(in_buf):
+    """Print every complete line in in_buf, return the leftover partial line."""
+    while b"\n" in in_buf:
+        line, in_buf = in_buf.split(b"\n", 1)
+        print(line.decode(errors="replace"))
+    return in_buf
+
+
+#edited
+def graceful_quit(sock, in_buf, write_buffer):
+    """Flush QUIT, wait for the server's reply, then half-close (FIN, not RST)."""
+    sock.setblocking(True)
+    sock.settimeout(2.0)
+    try:
+        if write_buffer:
+            sock.sendall(write_buffer)
+        while b"\n" not in in_buf:
+            chunk = sock.recv(4096)
+            if chunk == b"":
+                break
+            in_buf += chunk
+    except OSError:
+        pass
+    print_lines(in_buf)
+    try:
+        sock.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+    sock.close()
+
+
 def main():
     host, port, name = parse_args()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -73,6 +105,8 @@ def main():
     kq.control([event, event2], 0, 0) 
     # this 0,0 means "no max event" as this control is not for returning any event, and no timeout, as we want to block until an event occurs
     write_buffer= b""
+    #edited
+    in_buf= b""
     while True: 
         events= kq.control(None, 8, None)
         for event in events:
@@ -90,15 +124,43 @@ def main():
                     )], 0, 0)
             elif event.filter==select.KQ_FILTER_READ and event.ident==sock.fileno():
                 # socket got something to read
-                data=read(sock, 4096).decode(errors="replace").strip()
-                print(data)
+                #edited
+                in_buf += read(sock, 4096)
+                #edited
+                in_buf = print_lines(in_buf)
             elif event.filter==select.KQ_FILTER_READ and event.ident==sys.stdin.fileno():
                 # user typed something
-                line=sys.stdin.readline().strip()
-                if not line:
-                    continue
+                #edited
+                raw=sys.stdin.readline()
+                #edited
+                if raw=="":
+                    #edited
+                    # EOF on stdin (Ctrl-D): treat as QUIT instead of spinning
+                    line="QUIT"
+                #edited
+                else:
+                    #edited
+                    line=raw.strip()
+                    #edited
+                    if not line:
+                        #edited
+                        continue
                 payload=(line+"\n").encode()
-                bytes_sent=sock.send(payload)
+                #edited
+                try:
+                    bytes_sent=sock.send(payload)
+                #edited
+                except BlockingIOError:
+                    #edited
+                    bytes_sent=0
+                #edited
+                except (BrokenPipeError, OSError) as e:
+                    #edited
+                    print(f"Send failed, server is gone: {e}")
+                    #edited
+                    sock.close()
+                    #edited
+                    exit(1)
                 if bytes_sent<len(payload):
                     write_buffer=payload[bytes_sent:]
                     write_ev=select.kevent(
@@ -110,7 +172,8 @@ def main():
 
                 if line.upper()=="QUIT":
                     print("Disconnecting...")
-                    sock.close()
+                    #edited
+                    graceful_quit(sock, in_buf, write_buffer)
                     exit(0)
 
 if __name__ == "__main__":

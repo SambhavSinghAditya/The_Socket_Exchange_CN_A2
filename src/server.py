@@ -1,21 +1,39 @@
 """
-Exchange Server -- Checkpoint 2b
-Covers: Lecture 1.3 (socket creation), 2.1-2.2 (framing), 2.3 (parsing + order book)
-
-NOTE: This version accepts and fully services ONE client at a time.
-Multi-client concurrency (threads / select) is Day 3 -- not covered yet.
+Exchange Server
+Covers: socket creation, framing, parsing + order book, matching,
+and multi-client concurrency via kqueue.
 """
 
 import socket, select
-from dataclasses import dataclass, field
+import sys
+from dataclasses import dataclass
 
 HOST = "127.0.0.1"
 PORT = 5050  # avoiding 5000 -- often squatted by other services (see Lecture 1.3 notes)
 
 VALID_INSTRUMENTS = {"JNST", "IMCT"}
 
+MAX_QTY_PRICE = 2**31 - 1
+
 executed_orders = [] # List of executed orders for logging / auditing
 connected_usernames= set()
+
+
+def parse_args(argv=None):
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) == 0:
+        return HOST, PORT
+    if len(args) == 1:
+        return HOST, int(args[0])
+    if len(args) == 2:
+        return args[0], int(args[1])
+    raise SystemExit("Usage: server.py [[host] port]")
+
+
+def is_ascii_digits(s):
+    # str.isdigit() accepts non-ASCII digits (e.g. superscripts, Arabic-Indic)
+    # which int() may reject or silently accept -- require plain ASCII 0-9.
+    return s.isascii() and s.isdigit()
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +61,8 @@ class Trade:
 class OrderBook:
     """
     Holds all outstanding orders, organized per-instrument and per-side
-    so that matching (added in a later lecture) only ever has to scan
-    the opposite side of the same instrument.
+    so that matching only ever has to scan the opposite side of the
+    same instrument.
     """
 
     def __init__(self):
@@ -69,58 +87,10 @@ class OrderBook:
             print(f"Warning: Order {order.order_id} not found in book for removal.")
             return False
 
-    # def insert_order(self, order: Order):
-    #     self.orders_by_id[order.order_id] = order
-    #     book = self.buy_orders if order.side == "BUY" else self.sell_orders
-    #     other_book = self.buy_orders if order.side == "SELL" else self.sell_orders
-    #     executed = [] # list of executed orders
-    #     tmp=order.qty
-    #     for e in other_book[order.instrument]:
-    #         if e.price==order.price: 
-    #             print(f"Matching order found: {e} and {order}")
-    #             if e.qty >= order.qty:
-    #                 e.qty -= order.qty
-    #                 executed_order= copy.copy(e)
-    #                 executed_order.qty=order.qty
-    #                 order.qty = 0
-
-    #                 executed.append(executed_order)
-
-    #                 print(f"Order {order.order_id} fully matched and removed from book.")
-    #                 break
-    #             else: 
-    #                 order.qty -= e.qty
-
-    #                 executed_order= copy.copy(e)
-
-    #                 e.qty = 0
-
-    #                 executed.append(executed_order)
-
-    #                 print(f"Order {e.order_id} fully matched and removed from book.")
-    #                 other_book[order.instrument].remove(e)
-    #                 self.orders_by_id.pop(e.order_id, None)
-    #                 continue
-    #     if order.qty > 0:
-    #         self.orders_by_id[order.order_id] = order
-    #         book[order.instrument].append(order)
-    #         order_executed = copy.copy(order)
-    #         order_executed.qty = tmp - order.qty
-    #         executed.append(order_executed)
-    #         return executed
-    #     else: 
-    #         order_executed = copy.copy(order)
-    #         order_executed.qty = tmp
-    #         executed.append(order_executed)
-    #         return executed
-
     def insert_order(self, order: Order):
         book = self.buy_orders if order.side == "BUY" else self.sell_orders
         other_book = self.buy_orders if order.side == "SELL" else self.sell_orders
         executed = [] # list of executed orders
-        # filled = 0
-        tmp = order.qty
-
 
         for e in list(other_book[order.instrument]):
 
@@ -167,18 +137,8 @@ class OrderBook:
         if order.qty > 0:
             book[order.instrument].append(order)
             self.orders_by_id[order.order_id] = order
-
-            # filled = tmp - order.qty
-
-            # if filled > 0:
-            #     order_executed = copy.copy(order)
-            #     order_executed.qty = filled
-            #     executed.append(order_executed)
             return executed
         else:
-            # order_executed = copy.copy(order)
-            # order_executed.qty = tmp
-            # executed.append(order_executed)
             return executed
 
 
@@ -202,7 +162,7 @@ class OrderBook:
 
 #         data = conn.recv(4096)
 #         if not data:
-#             return  # peer closed the connection (orderly close) -- see Day 3
+#             return  # peer closed the connection (orderly close)
 #         buffer += data
 
 
@@ -226,11 +186,13 @@ def parse_order_args(args):
     instrument, qty_str, price_str = args
     if instrument not in VALID_INSTRUMENTS:
         raise ValueError(f"unknown instrument {instrument}")
-    if not qty_str.isdigit() or not price_str.isdigit():
+    if not is_ascii_digits(qty_str) or not is_ascii_digits(price_str):
         raise ValueError("quantity and price must be positive integers")
     qty, price = int(qty_str), int(price_str)
     if qty <= 0 or price <= 0:
         raise ValueError("quantity and price must be positive")
+    if qty > MAX_QTY_PRICE or price > MAX_QTY_PRICE:
+        raise ValueError(f"quantity and price must be at most {MAX_QTY_PRICE}")
     return instrument, qty, price
 
 
@@ -354,10 +316,11 @@ class ClientSession:
             self.send("ERROR LOGIN requires exactly one username")
             return
         if not self.logged_in:
-            if self.username in connected_usernames: 
+            self.username = args[0]
+            if self.username in connected_usernames:
+                self.username = None    # don't hold a name this session doesn't own
                 self.send("ERROR username already logged in")
                 return
-            self.username = args[0]
             self.client_type = "TRADER"  
             self.logged_in = True
             connected_usernames.add(self.username)
@@ -404,8 +367,6 @@ class ClientSession:
         )
         executed = self.order_book.insert_order(order)
         executed_orders.extend(executed)
-        # NOTE: matching against the opposite side happens in a later
-        # lecture (Day 3, §2.6) -- for now we only accept and store.
         self.send(f"ORDER_ACCEPTED {order_id}")
 
     def handle_cancel(self, args):
@@ -414,7 +375,7 @@ class ClientSession:
             return
         if not self._require_login():
             return
-        if len(args) != 1 or not args[0].isdigit():
+        if len(args) != 1 or not is_ascii_digits(args[0]):
             self.send("ERROR CANCEL requires a numeric order_id")
             return
         order_id = int(args[0])
@@ -448,6 +409,9 @@ class ClientSession:
         if instrument not in VALID_INSTRUMENTS:
             self.send(f"ERROR unknown instrument {instrument}")
             return
+        if instrument in self.subscriptions:
+            self.send(f"ERROR already subscribed to {instrument}")
+            return
         self.subscriptions.add(instrument)
         self.send(f"OK")
         self.client_type= "MARKET_DATA"
@@ -478,22 +442,20 @@ class ClientSession:
 # ---------------------------------------------------------------------------
 
 def main():
+    host, port = parse_args()
     order_book = OrderBook()
 
     kq=select.kqueue() # create a kqueue obj
 
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_sock.bind((HOST, PORT))
+    server_sock.bind((host, port))
     server_sock.listen()
     server_sock.setblocking(False) 
     server_event = select.kevent(server_sock.fileno(), filter=select.KQ_FILTER_READ, flags=select.KQ_EV_ADD)
     kq.control([server_event], 0)
-    print(f"Exchange Server listening on {HOST}:{PORT} ...")
+    print(f"Exchange Server listening on {host}:{port} ...")
 
-    # Single-connection loop for now: fully service one client,
-    # then go back to accept() for the next one.
-    # Multiple SIMULTANEOUS clients require threads/select -- Day 3.
     sessions={} # store the client sessions.
     def cleanup_session(fd):
         s = sessions.pop(fd, None)
@@ -530,18 +492,13 @@ def main():
                     sessions[conn.fileno()]=session
                     client_event = select.kevent(conn.fileno(), filter=select.KQ_FILTER_READ, flags=select.KQ_EV_ADD)
                     kq.control([client_event], 0)
-            elif event.flags & select.KQ_EV_EOF:
-                session = sessions.get(event.ident)
-                if session:
-                    session.run(inform) # process remaining
-                    print(f"Client {session.addr} disconnected.")
-                    cleanup_session(event.ident)
-                    # The kernel automatically removes closed fds from kqueue
             elif event.filter == select.KQ_FILTER_READ: 
-                # handle client events
+                # handle client events -- checked BEFORE the EOF arm so an event
+                # carrying data + EOF still gets its buffered commands executed
                 session=sessions.get(event.ident)
                 if session:
                     if not session.run(inform):
+                        print(f"Client {session.addr} disconnected.")
                         cleanup_session(event.ident)
 
                     
@@ -549,6 +506,14 @@ def main():
                     print(f"Warning: No session found for fd {event.ident}")
                     # should not happen, but if it does, let's delete the event
                     kq.control([select.kevent(event.ident, filter=select.KQ_FILTER_READ, flags=select.KQ_EV_DELETE)], 0)
+
+            elif event.flags & select.KQ_EV_EOF:
+                session = sessions.get(event.ident)
+                if session:
+                    session.run(inform) # process remaining
+                    print(f"Client {session.addr} disconnected.")
+                    cleanup_session(event.ident)
+                    # The kernel automatically removes closed fds from kqueue
 
             elif event.filter == select.KQ_FILTER_WRITE:
                 session= sessions.get(event.ident)

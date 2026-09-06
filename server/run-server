@@ -1,0 +1,3 @@
+#!/bin/sh
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+exec python3 "$ROOT/src/server.py" "$@"

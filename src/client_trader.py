@@ -6,6 +6,16 @@ HOST = "127.0.0.1"
 PORT = 5050
 
 
+def parse_args(argv=None):
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) == 0:
+        return HOST, PORT, "alice"
+    if len(args) != 3:
+        raise SystemExit("Usage: client_trader.py [host port name]")
+    host, port, name = args
+    return host, int(port), name
+
+
 # def read_lines(conn):
 #     """
 #     Same framer as the server -- reused here because the client faces
@@ -39,10 +49,12 @@ def read(sock, n):
     return data
 
 def main():
+    host, port, name = parse_args()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect((HOST, PORT))
-    print(f"Connected to {HOST}:{PORT}")
-    print("Type protocol messages (e.g. 'LOGIN alice', 'BUY JNST 100 238').")
+    sock.connect((host, port))
+    sock.sendall(f"LOGIN {name}\n".encode())
+    print(f"Connected to {host}:{port}")
+    print("Type protocol messages (e.g. 'BUY JNST 100 238').")
     print("Type QUIT to disconnect, or Ctrl+C to force-exit.\n")
 
     kq=select.kqueue()
@@ -78,7 +90,7 @@ def main():
                     )], 0, 0)
             elif event.filter==select.KQ_FILTER_READ and event.ident==sock.fileno():
                 # socket got something to read
-                data=read(sock, 4096).decode(errors="replace")
+                data=read(sock, 4096).decode(errors="replace").strip()
                 print(data)
             elif event.filter==select.KQ_FILTER_READ and event.ident==sys.stdin.fileno():
                 # user typed something

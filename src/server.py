@@ -15,6 +15,7 @@ PORT = 5050  # avoiding 5000 -- often squatted by other services (see Lecture 1.
 VALID_INSTRUMENTS = {"JNST", "IMCT"}
 
 executed_orders = [] # List of executed orders for logging / auditing
+connected_usernames= set()
 
 
 # ---------------------------------------------------------------------------
@@ -353,10 +354,13 @@ class ClientSession:
             self.send("ERROR LOGIN requires exactly one username")
             return
         if not self.logged_in:
-
+            if self.username in connected_usernames: 
+                self.send("ERROR username already logged in")
+                return
             self.username = args[0]
             self.client_type = "TRADER"  
             self.logged_in = True
+            connected_usernames.add(self.username)
             print(f"    {self.addr} logged in as {self.username!r}")
             self.send("OK")
         else: 
@@ -494,6 +498,8 @@ def main():
     def cleanup_session(fd):
         s = sessions.pop(fd, None)
         if s and s.conn:
+            if s.username in connected_usernames:
+                connected_usernames.discard(s.username)
             s.conn.close()
 
     def inform(orders):

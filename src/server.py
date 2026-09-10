@@ -532,18 +532,19 @@ def main():
                             print(f"Client {session.addr} disconnected while flushing.")
                             cleanup_session(event.ident)
                             continue
-                        # del, not a re-slice: slicing copies the entire backlog
-                        # on every partial write, which is quadratic for a client
-                        # that is holding megabytes of unsent market data
                         del session.out_buf[:sent_bytes]
                     if not session.out_buf:
-                        # remove write event if buffer is empty
                         try:
                             kq.control([select.kevent(session.conn.fileno(), filter=select.KQ_FILTER_WRITE, flags=select.KQ_EV_DELETE)], 0)
                         except OSError:
-                            pass  # fd already gone; the kernel dropped the filter
+                            pass 
 
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Ctrl-C interrupts the blocking kq.control() wait; that is the normal
+        # way to stop the server, so report it instead of dumping a traceback.
+        print("\nExchange Server shutting down.")

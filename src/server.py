@@ -450,7 +450,7 @@ def main():
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_sock.bind((host, port))
-    server_sock.listen()
+    server_sock.listen(8192)
     server_sock.setblocking(False) 
     server_event = select.kevent(server_sock.fileno(), filter=select.KQ_FILTER_READ, flags=select.KQ_EV_ADD)
     kq.control([server_event], 0)

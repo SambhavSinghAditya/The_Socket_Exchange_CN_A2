@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Experiment captures and traces (never submit these)
+ktrace/
+pcap/
+shots/
+*.ktr
+*.pcap

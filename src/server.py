@@ -484,6 +484,8 @@ def main():
                 while True:
                     try:
                         conn, addr = server_sock.accept()
+                    except (ConnectionAbortedError):
+                        continue
                     except BlockingIOError:
                         break
                     conn.setblocking(False)
@@ -524,10 +526,22 @@ def main():
                             sent_bytes=session.conn.send(session.out_buf)
                         except BlockingIOError:
                             sent_bytes=0
-                        session.out_buf=session.out_buf[sent_bytes:]
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            # the peer vanished while we were draining its
+                            # backlog -- without this the whole server dies
+                            print(f"Client {session.addr} disconnected while flushing.")
+                            cleanup_session(event.ident)
+                            continue
+                        # del, not a re-slice: slicing copies the entire backlog
+                        # on every partial write, which is quadratic for a client
+                        # that is holding megabytes of unsent market data
+                        del session.out_buf[:sent_bytes]
                     if not session.out_buf:
                         # remove write event if buffer is empty
-                        kq.control([select.kevent(session.conn.fileno(), filter=select.KQ_FILTER_WRITE, flags=select.KQ_EV_DELETE)], 0)
+                        try:
+                            kq.control([select.kevent(session.conn.fileno(), filter=select.KQ_FILTER_WRITE, flags=select.KQ_EV_DELETE)], 0)
+                        except OSError:
+                            pass  # fd already gone; the kernel dropped the filter
 
 
 

@@ -75,8 +75,12 @@ def main():
     failures = {}
 
     for i in range(count):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # socket() itself can fail once a kernel-wide limit is reached (ENOBUFS
+        # when the socket zone or mbuf clusters run out), so it has to be inside
+        # the try -- otherwise the run dies instead of reporting the limit.
+        sock = None
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             source = sources[i % len(sources)]
             if source is not None:
                 sock.bind((source, 0))
@@ -87,7 +91,8 @@ def main():
         except OSError as exc:
             name = describe(exc.errno)
             failures[name] = failures.get(name, 0) + 1
-            sock.close()
+            if sock is not None:
+                sock.close()
 
         if (i + 1) % REPORT_EVERY == 0:
             print(f"  attempted {i + 1}, holding {len(held)}")
@@ -101,7 +106,9 @@ def main():
             print(f"  {name}: {n}")
         print()
         print("  EMFILE / ENFILE -> file-descriptor limit reached")
-        print("  EADDRNOTAVAIL   -> ephemeral source ports exhausted")
+        print("  ENOBUFS         -> kernel socket zone / mbuf clusters exhausted")
+        print("  EADDRNOTAVAIL   -> source address not on an interface, or")
+        print("                     ephemeral source ports exhausted")
         print("  ECONNREFUSED    -> server accept queue overflowed")
         print("  ETIMEDOUT       -> server could not keep up with accept()")
     else:

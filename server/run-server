@@ -1,3 +1,9 @@
 #!/bin/sh
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+if [ -n "$EXCHANGE_KTRACE" ]; then
+    # ktrace cannot create the trace file if its directory is missing, and
+    # because we exec it the server would fail to start at all.
+    mkdir -p "$(dirname "$EXCHANGE_KTRACE")"
+    exec ktrace -i -t ci -f "$EXCHANGE_KTRACE" python3 "$ROOT/src/server.py" "$@"
+fi
 exec python3 "$ROOT/src/server.py" "$@"

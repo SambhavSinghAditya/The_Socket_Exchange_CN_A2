@@ -450,7 +450,7 @@ def main():
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_sock.bind((host, port))
-    server_sock.listen()
+    server_sock.listen(8192)
     server_sock.setblocking(False) 
     server_event = select.kevent(server_sock.fileno(), filter=select.KQ_FILTER_READ, flags=select.KQ_EV_ADD)
     kq.control([server_event], 0)
@@ -484,6 +484,8 @@ def main():
                 while True:
                     try:
                         conn, addr = server_sock.accept()
+                    except (ConnectionAbortedError):
+                        continue
                     except BlockingIOError:
                         break
                     conn.setblocking(False)
@@ -524,12 +526,25 @@ def main():
                             sent_bytes=session.conn.send(session.out_buf)
                         except BlockingIOError:
                             sent_bytes=0
-                        session.out_buf=session.out_buf[sent_bytes:]
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            # the peer vanished while we were draining its
+                            # backlog -- without this the whole server dies
+                            print(f"Client {session.addr} disconnected while flushing.")
+                            cleanup_session(event.ident)
+                            continue
+                        del session.out_buf[:sent_bytes]
                     if not session.out_buf:
-                        # remove write event if buffer is empty
-                        kq.control([select.kevent(session.conn.fileno(), filter=select.KQ_FILTER_WRITE, flags=select.KQ_EV_DELETE)], 0)
+                        try:
+                            kq.control([select.kevent(session.conn.fileno(), filter=select.KQ_FILTER_WRITE, flags=select.KQ_EV_DELETE)], 0)
+                        except OSError:
+                            pass 
 
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Ctrl-C interrupts the blocking kq.control() wait; that is the normal
+        # way to stop the server, so report it instead of dumping a traceback.
+        print("\nExchange Server shutting down.")
